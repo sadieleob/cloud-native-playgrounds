@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  labels:
+    istio.io/dataplane-mode: ambient
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: curl-client
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl-client
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl-client
+  template:
+    metadata:
+      labels:
+        app: curl-client
+    spec:
+      serviceAccountName: curl-client
+      containers:
+      - name: curl
+        image: curlimages/curl:7.83.1
+        command: ["sleep", "infinity"]
