@@ -1,0 +1,19 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: http
+  namespace: kgateway-system
+spec:
+  gatewayClassName: enterprise-kgateway
+  infrastructure:
+    parametersRef:
+      name: kgw-ambient-params
+      group: enterprisekgateway.solo.io
+      kind: EnterpriseKgatewayParameters
+  listeners:
+  - name: http
+    port: 8080
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All

@@ -1,0 +1,10 @@
+apiVersion: enterprisekgateway.solo.io/v1alpha1
+kind: EnterpriseKgatewayParameters
+metadata:
+  name: kgw-ambient-params
+  namespace: kgateway-system
+spec:
+  kube:
+    podTemplate:
+      extraAnnotations:
+        ambient.istio.io/bypass-inbound-capture: "true"
