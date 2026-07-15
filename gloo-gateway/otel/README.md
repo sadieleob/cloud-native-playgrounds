@@ -277,38 +277,6 @@ scrape_configs:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Things to Know
-
-**Pod label selectors** — The receivers use the `gloo` pod label for Kubernetes service discovery. Verify your pods match before deploying:
-
-```bash
-kubectl get pods -A -l gloo=kube-gateway        # data plane
-kubectl get pods -A -l gloo=gloo                 # control plane
-kubectl get pods -A -l 'gloo in (extauth, rate-limit)'  # addons
-```
-
-**Prometheus annotations** — All Gloo Gateway pods need these annotations (set by default in the Helm chart):
-
-```yaml
-prometheus.io/scrape: "true"
-prometheus.io/port: "9091"
-prometheus.io/path: "/metrics"
-```
-
-**Memory limiter** — The `memory_limiter` processor prevents OOM kills under high cardinality. For production, add resource limits:
-
-```yaml
-resources:
-  limits:
-    cpu: 500m
-    memory: 512Mi
-  requests:
-    cpu: 100m
-    memory: 128Mi
-```
-
-**Custom pipelines pitfall** — When adding custom pipelines, every referenced processor, receiver, and exporter must be defined. The OTel collector validates all references at startup and refuses to start if any component is missing. This applies both to this standalone collector and to the built-in `gloo-platform` telemetry collector when using `telemetryCollectorCustomization.extraPipelines`.
-
 ## Cleanup
 
 ```bash
