@@ -1,6 +1,6 @@
-# Solo UI Deployment (Multicluster Ambient Mesh)
+# Solo UI Deployment (Multicluster Ambient Mesh + kgateway)
 
-Deploy the Solo UI observability stack across a multicluster Istio ambient mesh. Provides service graph, live metrics, mTLS visualization, and cross-cluster dashboard.
+Deploy the Solo UI observability stack across a multicluster Istio ambient mesh with Enterprise kgateway. Provides service graph, live metrics, mTLS visualization, and cross-cluster dashboard.
 
 **Version:** Solo UI 0.4.6
 **Reference:** https://docs.solo.io/istio/1.30.x/setup/setup/
@@ -62,7 +62,8 @@ breaking raw TCP protocols.
 ## Prerequisites
 
 - Multicluster Istio ambient mesh installed ([01_install_ambient.md](01_install_ambient.md))
-- Apps deployed to the mesh ([02_deploy_apps.md](02_deploy_apps.md))
+- Enterprise kgateway installed ([02_install_kgateway.md](02_install_kgateway.md))
+- Apps deployed to the mesh ([03_deploy_apps.md](03_deploy_apps.md))
 - Solo Enterprise for Istio license key
 - `DEBUG_ENDPOINT_AUTH_ALLOWED_NAMESPACES` set in istiod (required for Istio 1.29.0+)
 
