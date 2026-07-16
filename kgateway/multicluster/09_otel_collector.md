@@ -1,12 +1,12 @@
-# OTel Collector for Ambient Mesh + kgateway (Multicluster)
+# OTel Collector for kgateway + Ambient Mesh (Multicluster)
 
-Standalone OpenTelemetry collector setup for scraping metrics from Istio ambient mesh and kgateway components in a multicluster environment.
+Standalone OpenTelemetry collector setup for scraping metrics from kgateway and Istio ambient mesh components in a multicluster environment.
 
-**Reference:** [Solo.io Prometheus Scrape Config](https://docs.solo.io/istio/latest/setup/observability/prometheus/) | [Istio Standard Metrics](https://istio.io/latest/docs/reference/config/metrics/)
+**Reference:** [Solo.io Prometheus Scrape Config](https://docs.solo.io/istio/latest/setup/observability/prometheus/) | [Solo.io kgateway Metrics](https://docs.solo.io/gateway/latest/observability/metrics/)
 
 ## Overview
 
-Each cluster gets its own OTel collector instance. The collector scrapes Prometheus-format metrics from all mesh and gateway components using Kubernetes service discovery, then re-exposes them on a single endpoint (port `9099`) for external Prometheus consumption.
+Each cluster gets its own OTel collector instance. The collector scrapes Prometheus-format metrics from kgateway and Istio ambient components using Kubernetes service discovery, then re-exposes them on a single endpoint (port `9099`) for external Prometheus consumption.
 
 This is separate from the built-in `gloo-telemetry-collector` shipped with the `gloo-platform` chart (which feeds the Solo UI dashboard). Both can coexist.
 
@@ -14,17 +14,23 @@ This is separate from the built-in `gloo-telemetry-collector` shipped with the `
 
 The Istio receivers follow the [Solo.io documented scrape patterns](https://docs.solo.io/istio/latest/setup/observability/prometheus/):
 
-- **istiod** — uses `__meta_kubernetes_pod_label_istio` with regex `pilot|istiod` (covers both label conventions)
+- **istiod** — uses `__meta_kubernetes_pod_label_istio` with regex `pilot|istiod` (covers both label conventions across Istio versions)
 - **ztunnel** — uses `__meta_kubernetes_pod_label_app` with regex `ztunnel`
 - **gateway** — uses `__meta_kubernetes_pod_label_gateway_networking_k8s_io_gateway_name` with regex `.+` to catch all Gateway API-managed pods (waypoints, east-west gateways). A drop rule excludes `enterprise-kgateway` gateway-class pods to avoid overlap with the dedicated kgateway receiver.
 
+The kgateway receivers use product-specific labels:
+
+- **kgateway-proxies** — uses `kgateway=kube-gateway` to select Envoy proxy pods managed by kgateway
+- **kgateway-controlplane** — uses `kgateway=kgateway` to select the kgateway controller
+- **kgateway-addons** — uses `app=ext-auth-service|rate-limiter` combined with `gateway.solo.io/gatewayclass=enterprise-kgateway`
+
 All jobs include a `pod_phase` drop rule to skip `Pending|Succeeded|Failed|Completed` pods.
 
-The Solo docs use regex `$1`/`$2` backreferences for `__address__` construction. The OTel config parser interprets `$1` as environment variable substitution and refuses to start. This config uses `separator: ':'` instead, which produces the same result without the parser conflict.
+> **Note on OTel config parser:** The Solo docs use regex `$1`/`$2` backreferences for `__address__` construction. The OTel config parser interprets `$1` as environment variable substitution and refuses to start. This config uses `separator: ':'` instead, which produces the same result without the parser conflict.
 
 ### Primary Cluster — 6 Receivers
 
-The primary cluster runs both Istio ambient and kgateway:
+The primary cluster runs both kgateway and Istio ambient:
 
 | Receiver | Targets | Selector | Key Metrics |
 |----------|---------|----------|-------------|
@@ -47,8 +53,8 @@ The secondary cluster runs Istio ambient only (no kgateway):
 
 ## Prerequisites
 
+- kgateway Enterprise installed on primary cluster
 - Istio ambient mesh installed (Solo Enterprise for Istio 1.28.x+)
-- kgateway Enterprise installed on primary cluster (optional — omit kgateway receivers if not installed)
 - Helm 3.x
 - `kubectl` access to both clusters
 
@@ -61,7 +67,7 @@ helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm
 helm repo update
 ```
 
-### 2. Install on Primary Cluster (Istio + kgateway)
+### 2. Install on Primary Cluster (kgateway + Istio)
 
 ```bash
 export CTX_PRIMARY=<your-primary-context>
@@ -487,15 +493,6 @@ sleep 5
 # Check all jobs have targets
 curl -s http://localhost:9099/metrics | grep '^up{' | grep -oP 'job="[^"]+"' | sort | uniq -c
 
-# Istio control plane
-curl -s http://localhost:9099/metrics | grep 'pilot_xds_pushes' | head -3
-
-# ztunnel L4 metrics
-curl -s http://localhost:9099/metrics | grep 'istio_tcp_' | head -3
-
-# Gateway (waypoints + east-west)
-curl -s http://localhost:9099/metrics | grep 'job="gateway"' | head -3
-
 # kgateway proxy (Envoy)
 curl -s http://localhost:9099/metrics | grep 'job="kgateway-proxies"' | head -3
 
@@ -504,6 +501,15 @@ curl -s http://localhost:9099/metrics | grep 'job="kgateway-controlplane"' | hea
 
 # kgateway addons (ExtAuth, Rate Limiter)
 curl -s http://localhost:9099/metrics | grep 'job="kgateway-addons"' | head -3
+
+# Istio control plane
+curl -s http://localhost:9099/metrics | grep 'pilot_xds_pushes' | head -3
+
+# ztunnel L4 metrics
+curl -s http://localhost:9099/metrics | grep 'istio_tcp_' | head -3
+
+# Gateway (waypoints + east-west)
+curl -s http://localhost:9099/metrics | grep 'job="gateway"' | head -3
 
 kill $PID
 ```
@@ -553,22 +559,21 @@ scrape_configs:
 ## Architecture
 
 ```
-Primary Cluster (Istio ambient + kgateway)
+Primary Cluster (kgateway + Istio ambient)
 ===========================================
 
-  Istio Ambient                              kgateway
+  kgateway                                   Istio Ambient
   +-----------+ +-----------+ +-----------+  +-----------+ +-----------+
-  | istiod    | | ztunnel   | | waypoint  |  | kgateway  | | kgateway  |
-  | :15014    | | :15020    | | :15020    |  | proxy     | | ctrl      |
-  |           | | (DaemonS) | | (L7)      |  | :9091     | | :9092     |
+  | kgateway  | | kgateway  | | ext-auth  |  | istiod    | | ztunnel   |
+  | proxy     | | ctrl      | | rate-lim  |  | :15014    | | :15020    |
+  | :9091     | | :9092     | | :9091     |  |           | | (DaemonS) |
   +-----+-----+ +-----+-----+ +-----+-----+  +-----+-----+ +-----+-----+
         |             |             |               |             |
-  +-----+-----+                          +-----------+ +-----------+
-  | eastwest  |                          | ext-auth  | | rate-     |
-  | :15020    |                          | :9091     | | limiter   |
-  +-----+-----+                          +-----+-----+ | :9091     |
-        |                                      |       +-----+-----+
-        v             v             v          v    v        v
+                                          +-----------+ +-----------+
+                                          | waypoint  | | eastwest  |
+                                          | :15020    | | :15020    |
+                                          +-----+-----+ +-----+-----+
+        v             v             v          v     v        v
   +-----------------------------------------------------------+
   |              OTel Collector (ns: otel)                      |
   |  6 receivers -> memory_limiter -> batch -> prometheus:9099  |
@@ -597,20 +602,32 @@ Secondary Cluster (Istio ambient only)
 
 - The OTel collector namespace (`otel`) does **not** need ambient enrollment. Metric endpoints serve over cleartext HTTP regardless of mesh mTLS mode. Enrollment is only required if the cluster enforces mesh-wide STRICT mTLS via PeerAuthentication, which is uncommon in ambient deployments.
 - The `gateway` receiver catches both waypoint proxies and east-west gateways using the `gateway.networking.k8s.io/gateway-name` label. This is the same selector pattern from the [Solo.io scrape config docs](https://docs.solo.io/istio/latest/setup/observability/prometheus/).
-- If kgateway is colocated on the same cluster, its proxies also carry the `gateway.networking.k8s.io/gateway-name` label. The `gateway` receiver includes a drop rule for `enterprise-kgateway` gateway-class pods to avoid duplicate scraping with the dedicated `kgateway-dataplane` receiver.
+- kgateway proxies also carry the `gateway.networking.k8s.io/gateway-name` label. The `gateway` receiver includes a drop rule for `enterprise-kgateway` gateway-class pods to avoid duplicate scraping with the dedicated `kgateway-dataplane` receiver.
+
+## Label Overlap Between kgateway and Istio Gateways
+
+kgateway-managed Envoy proxies carry both `kgateway=kube-gateway` and `gateway.networking.k8s.io/gateway-name=<name>` labels. Without the drop rule in the `gateway` job, these pods would be scraped by both the `gateway` and `kgateway-proxies` jobs. The drop rule uses `gateway.networking.k8s.io/gateway-class-name=enterprise-kgateway` to exclude kgateway pods from the Istio gateway job.
+
+To verify this in your cluster:
+
+```bash
+# Show pods that would match both jobs without the drop rule
+kubectl get pods -A -l 'gateway.networking.k8s.io/gateway-name,kgateway=kube-gateway' \
+  -o custom-columns='NAME:.metadata.name,NAMESPACE:.metadata.namespace,GATEWAY-CLASS:.metadata.labels.gateway\.networking\.k8s\.io/gateway-class-name'
+```
 
 ## Key Metrics by Component
 
 | Component | Key Metrics | What They Tell You |
 |-----------|------------|-------------------|
-| istiod | `pilot_xds_pushes`, `pilot_proxy_convergence_time`, `citadel_server_csr_count` | Config push rate, convergence time, certificate signing |
-| ztunnel | `istio_tcp_connections_opened_total`, `istio_tcp_sent_bytes_total`, `istio_dns_requests_total` | L4 traffic volume, connection counts, DNS interception |
-| gateway (waypoint) | `envoy_http_downstream_rq_total`, `envoy_cluster_upstream_rq_total` | L7 request rates, upstream health |
-| gateway (eastwest) | `istio_tcp_connections_opened_total` | Cross-cluster HBONE tunnel traffic |
-| kgateway proxy | `envoy_http_downstream_rq_total`, `envoy_cluster_upstream_rq_total` | Gateway ingress traffic |
+| kgateway proxy | `envoy_http_downstream_rq_total`, `envoy_cluster_upstream_rq_total` | Gateway ingress traffic rates |
 | kgateway ctrl | controller reconcile duration | Reconciliation performance |
 | ext-auth | `runtime_goroutines_total` | Auth service health |
 | rate-limiter | `runtime_goroutines_total` | Rate limiter health |
+| istiod | `pilot_xds_pushes`, `pilot_proxy_convergence_time` | Config push rate, convergence time |
+| ztunnel | `istio_tcp_connections_opened_total`, `istio_tcp_sent_bytes_total` | L4 traffic volume |
+| gateway (waypoint) | `envoy_http_downstream_rq_total` | L7 request rates |
+| gateway (eastwest) | `istio_tcp_connections_opened_total` | Cross-cluster HBONE tunnel traffic |
 
 ## Cleanup
 
