@@ -140,47 +140,6 @@ sleep 5
 for i in $(seq 1 5); do curl -s -H "host: failover-pg.example.com" http://$GW_IP:8090/; done
 ```
 
-### Verify Envoy config
-
-```bash
-PROXY_POD=$(kubectl -n kgateway-system get pod -l gateway.networking.k8s.io/gateway-name=failover-pg-gw -o jsonpath='{.items[0].metadata.name}')
-kubectl -n kgateway-system exec $PROXY_POD -- wget -q -O- http://localhost:19000/config_dump 2>/dev/null | \
-  python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for config in data.get('configs', []):
-    if 'dynamic_active_clusters' in config:
-        for cluster in config['dynamic_active_clusters']:
-            c = cluster.get('cluster', {})
-            if 'failover-priority' in c.get('name', ''):
-                print(f'Cluster: {c[\"name\"]}')
-                for ep in c.get('load_assignment', {}).get('endpoints', []):
-                    p = ep.get('priority', 0)
-                    for lbe in ep.get('lb_endpoints', []):
-                        sa = lbe['endpoint']['address']['socket_address']
-                        print(f'  Priority {p}: {sa[\"address\"]}:{sa[\"port_value\"]}')
-                for hc in c.get('health_checks', []):
-                    print(f'  Health check: interval={hc[\"interval\"]}, timeout={hc[\"timeout\"]}, path={hc.get(\"http_health_check\",{}).get(\"path\")}')
-"
-```
-
-Expected:
-```
-Cluster: backend_failover-pg_failover-priority_0
-  Priority 0: nginx-omaha.failover-pg.svc.cluster.local:80
-  Priority 1: nginx-east1.failover-pg.svc.cluster.local:80
-  Priority 2: nginx-west2.failover-pg.svc.cluster.local:80
-  Health check: interval=2s, timeout=1s, path=/
-```
-
-## Limitations
-
-- Static backends only (no Lambda, GCP, DynamicForwardProxy)
-- Group members must be in the same namespace
-- No per-group weights (endpoints within a group are load balanced equally)
-- Up to 16 priority levels, up to 16 backends per group
-- Marked as experimental in 2.3.0
-
 ## Cleanup
 
 ```bash
