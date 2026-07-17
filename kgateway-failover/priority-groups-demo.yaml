@@ -1,0 +1,289 @@
+##############################################################################
+# Priority Groups Failover Demo
+#
+# 3-tier failover with different DNS per backend:
+#   Priority 0 (primary):   datacenter-omaha
+#   Priority 1 (failover):  aws-us-east-1
+#   Priority 2 (failover):  aws-us-west-2
+##############################################################################
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: failover-pg
+---
+# ── Backend services ──────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-omaha
+  namespace: failover-pg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-omaha
+  template:
+    metadata:
+      labels:
+        app: nginx-omaha
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 2
+          periodSeconds: 3
+      volumes:
+      - name: html
+        configMap:
+          name: nginx-omaha-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-omaha-html
+  namespace: failover-pg
+data:
+  index.html: |
+    {"region":"datacenter-omaha","priority":0,"status":"primary"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-omaha
+  namespace: failover-pg
+spec:
+  selector:
+    app: nginx-omaha
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-east1
+  namespace: failover-pg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-east1
+  template:
+    metadata:
+      labels:
+        app: nginx-east1
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 2
+          periodSeconds: 3
+      volumes:
+      - name: html
+        configMap:
+          name: nginx-east1-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-east1-html
+  namespace: failover-pg
+data:
+  index.html: |
+    {"region":"aws-us-east-1","priority":1,"status":"failover-1"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-east1
+  namespace: failover-pg
+spec:
+  selector:
+    app: nginx-east1
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-west2
+  namespace: failover-pg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-west2
+  template:
+    metadata:
+      labels:
+        app: nginx-west2
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 2
+          periodSeconds: 3
+      volumes:
+      - name: html
+        configMap:
+          name: nginx-west2-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-west2-html
+  namespace: failover-pg
+data:
+  index.html: |
+    {"region":"aws-us-west-2","priority":2,"status":"failover-2"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-west2
+  namespace: failover-pg
+spec:
+  selector:
+    app: nginx-west2
+  ports:
+  - port: 80
+    targetPort: 80
+---
+
+# ── Static Backends ──────────────────────────────────────────────────────
+
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: Backend
+metadata:
+  name: backend-omaha
+  namespace: failover-pg
+spec:
+  static:
+    hosts:
+    - host: nginx-omaha.failover-pg.svc.cluster.local
+      port: 80
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: Backend
+metadata:
+  name: backend-east1
+  namespace: failover-pg
+spec:
+  static:
+    hosts:
+    - host: nginx-east1.failover-pg.svc.cluster.local
+      port: 80
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: Backend
+metadata:
+  name: backend-west2
+  namespace: failover-pg
+spec:
+  static:
+    hosts:
+    - host: nginx-west2.failover-pg.svc.cluster.local
+      port: 80
+---
+
+# ── Priority Groups Backend ──────────────────────────────────────────────
+
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: Backend
+metadata:
+  name: failover-priority
+  namespace: failover-pg
+spec:
+  priorityGroups:
+  - backendRefs:
+    - name: backend-omaha       # Priority 0: datacenter (primary)
+  - backendRefs:
+    - name: backend-east1       # Priority 1: AWS us-east-1
+  - backendRefs:
+    - name: backend-west2       # Priority 2: AWS us-west-2
+
+---
+
+# ── Health Check ──────────────────────────────────────────────────────────
+
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: BackendConfigPolicy
+metadata:
+  name: failover-hc
+  namespace: failover-pg
+spec:
+  targetRefs:
+  - name: failover-priority
+    group: gateway.kgateway.dev
+    kind: Backend
+  healthCheck:
+    timeout: 1s
+    interval: 2s
+    unhealthyThreshold: 2
+    healthyThreshold: 1
+    http:
+      path: /
+---
+
+# ── Gateway & HTTPRoute ──────────────────────────────────────────────────
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: failover-pg-gw
+  namespace: kgateway-system
+spec:
+  gatewayClassName: enterprise-kgateway
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 8090
+    allowedRoutes:
+      namespaces:
+        from: All
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: failover-pg-route
+  namespace: failover-pg
+spec:
+  parentRefs:
+  - name: failover-pg-gw
+    namespace: kgateway-system
+  hostnames:
+  - "failover-pg.example.com"
+  rules:
+  - backendRefs:
+    - name: failover-priority
+      kind: Backend
+      group: gateway.kgateway.dev
