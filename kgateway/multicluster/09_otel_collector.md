@@ -640,3 +640,94 @@ kubectl delete namespace otel --context $CTX_PRIMARY
 helm uninstall opentelemetry-collector -n otel --kube-context $CTX_SECONDARY
 kubectl delete namespace otel --context $CTX_SECONDARY
 ```
+
+### Option C: Prometheus as Docker container on the same host as Kind
+
+When Prometheus runs as a standalone Docker container on the same VM as Kind clusters, it cannot reach ClusterIP services inside Kind. Two networking steps are needed.
+
+**Step 1 — Expose OTel collectors as LoadBalancer**
+
+MetalLB (required on the Kind cluster) assigns a routable IP in the Kind bridge range.
+
+```bash
+kubectl --context $CTX_PRIMARY patch svc opentelemetry-collector -n otel \
+  -p '{"spec":{"type":"LoadBalancer"}}'
+kubectl --context $CTX_SECONDARY patch svc opentelemetry-collector -n otel \
+  -p '{"spec":{"type":"LoadBalancer"}}'
+
+# Get assigned IPs
+EAST_LB=$(kubectl --context $CTX_PRIMARY get svc opentelemetry-collector -n otel \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+WEST_LB=$(kubectl --context $CTX_SECONDARY get svc opentelemetry-collector -n otel \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Primary OTel LB: $EAST_LB"
+echo "Secondary OTel LB: $WEST_LB"
+```
+
+**Step 2 — Connect the Prometheus container to the kind Docker network**
+
+```bash
+docker network connect kind <prometheus-container-name>
+```
+
+This gives the container a routable interface into the Kind bridge, enabling it to reach MetalLB IPs.
+
+**Step 3 — Add scrape jobs to prometheus.yml**
+
+```yaml
+# Primary cluster: kgateway + Istio ambient (6 OTel receiver jobs aggregated)
+- job_name: "cluster-primary"
+  static_configs:
+    - targets: ["<EAST_LB_IP>:9099"]
+      labels:
+        cluster: "primary"
+
+# Secondary cluster: Istio ambient only (3 OTel receiver jobs aggregated)
+- job_name: "cluster-secondary"
+  static_configs:
+    - targets: ["<WEST_LB_IP>:9099"]
+      labels:
+        cluster: "secondary"
+```
+
+**Step 4 — Reload Prometheus**
+
+If the prometheus.yml bind mount has a stale inode (common when the file is replaced rather than edited in-place), a restart is required:
+
+```bash
+docker restart <prometheus-container-name>
+```
+
+Otherwise a hot reload is sufficient:
+
+```bash
+curl -s -X POST http://localhost:9090/-/reload
+```
+
+**Validate targets and metrics:**
+
+```bash
+# Check targets are up
+curl -s http://localhost:9090/api/v1/targets | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for t in d['data']['activeTargets']:
+    print(t['labels']['job'], t['health'])
+"
+
+# Verify Istio control plane metrics are in Prometheus
+curl -s 'http://localhost:9090/api/v1/query?query=pilot_xds_pushes_total' | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'{len(d[\"data\"][\"result\"])} series for pilot_xds_pushes_total')
+"
+
+# Verify kgateway traffic metrics
+curl -s 'http://localhost:9090/api/v1/query?query=envoy_http_downstream_rq_total' | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'{len(d[\"data\"][\"result\"])} series for envoy_http_downstream_rq_total')
+"
+```
+
+> **Note:** The `solo-enterprise` OTel collector (feeds Solo UI ClickHouse) and this external OTel collector (`otel` namespace, feeds external Prometheus) coexist independently — connecting your own Prometheus does not affect the Solo UI telemetry pipeline.
