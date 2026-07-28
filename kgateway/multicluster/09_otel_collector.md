@@ -10,6 +10,116 @@ Each cluster gets its own OTel collector instance. The collector scrapes Prometh
 
 This is separate from the built-in `gloo-telemetry-collector` shipped with the `gloo-platform` chart (which feeds the Solo UI dashboard). Both can coexist.
 
+## Integration Architecture
+
+The diagram below shows how metrics flow from each component through the OTel collector to external Prometheus and Grafana, alongside the separate Solo UI telemetry pipeline.
+
+```
+Primary Cluster (kgateway + Istio ambient)
+═══════════════════════════════════════════════════════════════════════════════
+
+  ┌─────────────────────────────── kgateway ──────────────────────────────┐
+  │                                                                        │
+  │  ┌──────────────┐  ┌──────────────┐  ┌───────────┐  ┌─────────────┐  │
+  │  │ kgateway     │  │ kgateway     │  │ ext-auth  │  │ rate-limiter│  │
+  │  │ proxy :9091  │  │ ctrl  :9092  │  │    :9091  │  │      :9091  │  │
+  │  └──────┬───────┘  └──────┬───────┘  └─────┬─────┘  └──────┬──────┘  │
+  └─────────┼────────────────┼────────────────┼────────────────┼──────────┘
+            │                │                │                │
+  ┌─────────┼────────────────┼── Istio ambient┼────────────────┼──────────┐
+  │         │                │                │                │          │
+  │  ┌──────┴───────┐  ┌─────┴──────┐  ┌─────┴─────┐  ┌──────┴───────┐  │
+  │  │ istiod       │  │ ztunnel    │  │ waypoint  │  │ eastwest-gw  │  │
+  │  │   :15014     │  │   :15020   │  │   :15020  │  │   :15020     │  │
+  │  │ (DaemonSet)  │  │ (DaemonSet)│  │ (per-ns)  │  │              │  │
+  │  └──────┬───────┘  └─────┬──────┘  └─────┬─────┘  └──────┬───────┘  │
+  └─────────┼────────────────┼────────────────┼────────────────┼──────────┘
+            │                │                │                │
+            ▼                ▼                ▼                ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │            OTel Collector  (namespace: otel)                            │
+  │                                                                         │
+  │  receivers:                                                             │
+  │    prometheus/istiod          ─── scrapes istiod pod                   │
+  │    prometheus/ztunnel         ─── scrapes ztunnel DaemonSet pods        │
+  │    prometheus/gateway         ─── scrapes waypoints + eastwest-gw pods  │
+  │    prometheus/kgateway-dataplane   ─── scrapes kgateway proxy pods      │
+  │    prometheus/kgateway-controlplane ── scrapes kgateway controller pod  │
+  │    prometheus/kgateway-addons ─── scrapes ext-auth + rate-limiter pods  │
+  │                                                                         │
+  │  processors:  memory_limiter → batch                                    │
+  │  exporter:    prometheus (port 9099)                                    │
+  └────────────────────────────┬────────────────────────────────────────────┘
+                               │  HTTP /metrics  :9099
+              ┌────────────────┴────────────────┐
+              │                                 │
+              ▼                                 ▼
+  ┌───────────────────────┐       ┌──────────────────────────────────────┐
+  │  External Prometheus  │       │  Solo UI OTel Collector              │
+  │  (scrape job:         │       │  (namespace: solo-enterprise)        │
+  │   cluster-primary)    │       │  Scrapes same endpoints independently│
+  │                       │       │  → ClickHouse → Solo UI dashboard    │
+  └──────────┬────────────┘       └──────────────────────────────────────┘
+             │
+             ▼
+  ┌───────────────────────┐
+  │  Grafana              │
+  │  datasource: Prometheus│
+  │  dashboard:           │
+  │  kgateway + Ambient   │
+  └───────────────────────┘
+
+
+Secondary Cluster (Istio ambient only)
+═══════════════════════════════════════
+
+  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+  │ istiod       │  │ ztunnel      │  │ waypoint     │  │ eastwest-gw  │
+  │   :15014     │  │   :15020     │  │   :15020     │  │   :15020     │
+  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+         │                 │                 │                 │
+         ▼                 ▼                 ▼                 ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │        OTel Collector  (namespace: otel)                            │
+  │  3 receivers: istiod, ztunnel, gateway  →  prometheus :9099         │
+  └───────────────────────────┬─────────────────────────────────────────┘
+                              │  HTTP /metrics  :9099
+                              ▼
+                 ┌───────────────────────┐
+                 │  External Prometheus  │
+                 │  (scrape job:         │
+                 │   cluster-secondary)  │
+                 └──────────┬────────────┘
+                            │
+                            ▼ (same Grafana, cluster variable filters)
+                 ┌───────────────────────┐
+                 │  Grafana              │
+                 └───────────────────────┘
+
+
+Key Metric Flows
+════════════════
+
+  Component          Metric family              What it measures
+  ─────────────────  ─────────────────────────  ──────────────────────────────
+  kgateway proxy     envoy_http_downstream_rq_*  N-S ingress request rates
+  kgateway ctrl      enterprise_kgateway_        Reconcile duration per controller
+                     controller_reconcile_*
+  ext-auth           runtime_goroutines_total    Auth service health
+  rate-limiter       runtime_goroutines_total    Rate limiter health
+  istiod             pilot_xds_pushes_total      Config push rate by type (cds/eds/lds/rds)
+                     pilot_proxy_convergence_    xDS convergence latency
+  ztunnel            istio_tcp_connections_*     L4 mTLS connection counts
+                     istio_tcp_sent_bytes_total  East-west traffic volume
+                     istio_requests_total        L7 HTTP requests (ambient)
+  waypoint           envoy_http_downstream_rq_*  L7 policy enforcement point stats
+  eastwest-gw        istio_tcp_connections_*     Cross-cluster HBONE tunnel traffic
+```
+
+### Label Propagation
+
+The OTel collector uses `honor_labels: true` and `labelmap` relabeling to preserve the original Kubernetes pod labels as metric labels. When Prometheus scrapes the OTel exporter endpoint, it adds the static labels from `scrape_configs` (e.g., `cluster: primary`). The original scrape metadata is preserved in `exported_job` and `exported_instance` labels to distinguish between the six receiver jobs even though all metrics arrive through the single OTel exporter port.
+
 ### Scrape Job Design
 
 The Istio receivers follow the [Solo.io documented scrape patterns](https://docs.solo.io/istio/latest/setup/observability/prometheus/):
