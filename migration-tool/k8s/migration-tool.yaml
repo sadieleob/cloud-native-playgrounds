@@ -1,0 +1,79 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: migration-tool
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migration-tool
+  namespace: migration-tool
+  labels:
+    app: migration-tool
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-tool
+  template:
+    metadata:
+      labels:
+        app: migration-tool
+    spec:
+      containers:
+      - name: app
+        image: sadielio/migration-tool:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /migration/tool/
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-tool
+  namespace: migration-tool
+spec:
+  selector:
+    app: migration-tool
+  ports:
+  - port: 80
+    targetPort: 8000
+    name: http
+---
+# Route: migration-tool.localhost → migration-tool service
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: migration-tool
+  namespace: migration-tool
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: http
+    namespace: kgateway-system
+  hostnames:
+  - "migration-tool.localhost"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /migration/tool
+    backendRefs:
+    - name: migration-tool
+      port: 80
