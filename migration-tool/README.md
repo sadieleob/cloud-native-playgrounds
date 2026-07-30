@@ -165,25 +165,25 @@ kubectl --context $CONTEXT get httproute migration-tool -n migration-tool
 
 ## 8. Access
 
-kgateway creates one proxy pod per Gateway. Port-forward the HTTPS listener:
+Add `$TOOL_HOSTNAME` to your local `/etc/hosts` pointing to the Kind node:
+
+```bash
+echo "127.0.0.1  $TOOL_HOSTNAME" | sudo tee -a /etc/hosts
+```
+
+kgateway creates one proxy pod per Gateway. Port-forward to expose it locally on port 443:
 
 ```bash
 PROXY_POD=$(kubectl --context $CONTEXT -n $KGW_NAMESPACE \
   get pod -l gateway.networking.k8s.io/gateway-name=https \
   -o jsonpath='{.items[0].metadata.name}')
 
-kubectl --context $CONTEXT -n $KGW_NAMESPACE port-forward pod/$PROXY_POD 8443:443
+sudo kubectl --context $CONTEXT -n $KGW_NAMESPACE port-forward pod/$PROXY_POD 443:443
 ```
 
-Add to `/etc/hosts`:
+Open: **https://$TOOL_HOSTNAME/migration/tool/**
 
-```
-127.0.0.1  <TOOL_HOSTNAME>
-```
-
-Open: **https://\<TOOL_HOSTNAME\>:8443/migration/tool/**
-
-> **Note:** If using a self-signed or private CA, import the CA certificate into your OS/browser trust store to avoid the certificate warning.
+> **Note:** If using a self-signed or private CA, import the CA certificate into your OS/browser trust store to avoid the certificate warning. If you cannot run port-forward on port 443, use any free port (e.g. `8443:443`) and append it to the URL.
 
 ---
 
