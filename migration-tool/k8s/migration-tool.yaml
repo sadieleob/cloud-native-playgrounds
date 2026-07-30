@@ -65,10 +65,10 @@ spec:
   parentRefs:
   - group: gateway.networking.k8s.io
     kind: Gateway
-    name: http
+    name: https
     namespace: kgateway-system
   hostnames:
-  - "migration-tool.localhost"
+  - "migration-tool.servebeer.com"
   rules:
   - matches:
     - path:

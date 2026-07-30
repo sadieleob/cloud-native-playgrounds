@@ -91,19 +91,32 @@ helm upgrade -i portal \
 
 ---
 
-## 5. Gateway
+## 5. TLS secret
 
-> **Note:** The Helm chart auto-creates a `enterprise-kgateway` GatewayClass. The `k8s/gateway.yaml` uses that class — do not change `gatewayClassName`.
+The Gateway terminates TLS using the `*.servebeer.com` wildcard certificate. Create the secret from the cert/key files:
 
 ```bash
-kubectl --context $CONTEXT apply -f k8s/gateway.yaml
-kubectl --context $CONTEXT -n $KGW_NAMESPACE wait \
-  --for=condition=Programmed gateway/http --timeout=60s
+kubectl --context $CONTEXT create secret tls wildcard-servebeer-tls \
+  --cert=wildcard.servebeer.com.crt \
+  --key=wildcard.servebeer.com.key \
+  -n $KGW_NAMESPACE
 ```
 
 ---
 
-## 6. Migration tool
+## 6. Gateway
+
+> **Note:** The Helm chart auto-creates the `enterprise-kgateway` GatewayClass. The `k8s/gateway.yaml` references it — do not change `gatewayClassName`.
+
+```bash
+kubectl --context $CONTEXT apply -f k8s/gateway.yaml
+kubectl --context $CONTEXT -n $KGW_NAMESPACE wait \
+  --for=condition=Programmed gateway/https --timeout=60s
+```
+
+---
+
+## 7. Migration tool
 
 ```bash
 kubectl --context $CONTEXT apply -f k8s/migration-tool.yaml
@@ -119,27 +132,27 @@ kubectl --context $CONTEXT get httproute migration-tool -n migration-tool
 
 ---
 
-## 7. Access
+## 8. Access
 
-kgateway creates one proxy pod per Gateway. Port-forward to it using the gateway label:
+kgateway creates one proxy pod per Gateway. Port-forward the HTTPS listener:
 
 ```bash
 PROXY_POD=$(kubectl --context $CONTEXT -n $KGW_NAMESPACE \
-  get pod -l gateway.networking.k8s.io/gateway-name=http \
+  get pod -l gateway.networking.k8s.io/gateway-name=https \
   -o jsonpath='{.items[0].metadata.name}')
 
-kubectl --context $CONTEXT -n $KGW_NAMESPACE port-forward pod/$PROXY_POD 8080:8080
+kubectl --context $CONTEXT -n $KGW_NAMESPACE port-forward pod/$PROXY_POD 8443:443
 ```
-
-> **Tip:** If port 8080 is already in use, pick another: `port-forward pod/$PROXY_POD 9090:8080` and access at `http://migration-tool.localhost:9090/migration/tool/`.
 
 Add to `/etc/hosts`:
 
 ```
-127.0.0.1  migration-tool.localhost
+127.0.0.1  migration-tool.servebeer.com
 ```
 
-Open: **http://migration-tool.localhost:8080/migration/tool/**
+Open: **https://migration-tool.servebeer.com:8443/migration/tool/**
+
+> **Note:** Your browser will show a certificate warning if the homelab CA (`ca.crt`) is not trusted. Import it into your OS/browser trust store to avoid it, or accept the warning to proceed.
 
 ---
 
