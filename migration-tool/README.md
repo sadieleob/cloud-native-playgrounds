@@ -13,6 +13,28 @@ Convert Gloo Gateway v1 CRs to Enterprise kgateway 2.x in a browser UI.
 - Docker + kind + helm + kubectl
 - Enterprise kgateway license key: `$GLOO_LICENSE_KEY`
 - Enterprise kgateway portal license key: `$PORTAL_LICENSE_KEY` *(only needed if validating Portal CRs)*
+- A TLS certificate and key for your domain (wildcard recommended)
+
+---
+
+## 0. Set your variables
+
+Set these once before running any of the commands below:
+
+```bash
+# The hostname customers will use to access the tool
+export TOOL_HOSTNAME=migration-tool.example.com
+
+# The wildcard domain the Gateway listener will accept (must match your cert CN)
+export WILDCARD_HOSTNAME="*.example.com"
+
+# Name for the TLS secret in the cluster
+export TLS_SECRET=migration-tool-tls
+
+# Paths to your TLS certificate and key files
+export TLS_CERT_FILE=/path/to/your/cert.crt
+export TLS_KEY_FILE=/path/to/your/cert.key
+```
 
 ---
 
@@ -93,12 +115,12 @@ helm upgrade -i portal \
 
 ## 5. TLS secret
 
-The Gateway terminates TLS using the `*.servebeer.com` wildcard certificate. Create the secret from the cert/key files:
+Create the TLS secret the Gateway will use for termination:
 
 ```bash
-kubectl --context $CONTEXT create secret tls wildcard-servebeer-tls \
-  --cert=wildcard.servebeer.com.crt \
-  --key=wildcard.servebeer.com.key \
+kubectl --context $CONTEXT create secret tls $TLS_SECRET \
+  --cert=$TLS_CERT_FILE \
+  --key=$TLS_KEY_FILE \
   -n $KGW_NAMESPACE
 ```
 
@@ -106,10 +128,15 @@ kubectl --context $CONTEXT create secret tls wildcard-servebeer-tls \
 
 ## 6. Gateway
 
-> **Note:** The Helm chart auto-creates the `enterprise-kgateway` GatewayClass. The `k8s/gateway.yaml` references it — do not change `gatewayClassName`.
+Substitute your wildcard hostname and TLS secret name into the manifest, then apply:
+
+> **Note:** The Helm chart auto-creates the `enterprise-kgateway` GatewayClass — do not change `gatewayClassName`.
 
 ```bash
-kubectl --context $CONTEXT apply -f k8s/gateway.yaml
+sed -e "s/WILDCARD_HOSTNAME_PLACEHOLDER/$WILDCARD_HOSTNAME/g" \
+    -e "s/TLS_SECRET_PLACEHOLDER/$TLS_SECRET/g" \
+    k8s/gateway.yaml | kubectl --context $CONTEXT apply -f -
+
 kubectl --context $CONTEXT -n $KGW_NAMESPACE wait \
   --for=condition=Programmed gateway/https --timeout=60s
 ```
@@ -118,8 +145,12 @@ kubectl --context $CONTEXT -n $KGW_NAMESPACE wait \
 
 ## 7. Migration tool
 
+Substitute your hostname, then apply:
+
 ```bash
-kubectl --context $CONTEXT apply -f k8s/migration-tool.yaml
+sed "s/TOOL_HOSTNAME_PLACEHOLDER/$TOOL_HOSTNAME/g" \
+  k8s/migration-tool.yaml | kubectl --context $CONTEXT apply -f -
+
 kubectl --context $CONTEXT -n migration-tool rollout status deploy/migration-tool
 ```
 
@@ -147,12 +178,12 @@ kubectl --context $CONTEXT -n $KGW_NAMESPACE port-forward pod/$PROXY_POD 8443:44
 Add to `/etc/hosts`:
 
 ```
-127.0.0.1  migration-tool.servebeer.com
+127.0.0.1  <TOOL_HOSTNAME>
 ```
 
-Open: **https://migration-tool.servebeer.com:8443/migration/tool/**
+Open: **https://\<TOOL_HOSTNAME\>:8443/migration/tool/**
 
-> **Note:** Your browser will show a certificate warning if the homelab CA (`ca.crt`) is not trusted. Import it into your OS/browser trust store to avoid it, or accept the warning to proceed.
+> **Note:** If using a self-signed or private CA, import the CA certificate into your OS/browser trust store to avoid the certificate warning.
 
 ---
 

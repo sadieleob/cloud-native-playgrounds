@@ -68,7 +68,7 @@ spec:
     name: https
     namespace: kgateway-system
   hostnames:
-  - "migration-tool.servebeer.com"
+  - "TOOL_HOSTNAME_PLACEHOLDER"  # replace with your hostname, e.g. migration-tool.example.com
   rules:
   - matches:
     - path:
