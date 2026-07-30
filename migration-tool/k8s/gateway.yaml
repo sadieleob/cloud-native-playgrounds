@@ -1,18 +1,13 @@
 ---
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: kgateway
-spec:
-  controllerName: solo.io/kgateway
----
+# The enterprise-kgateway GatewayClass is created by the Helm chart.
+# We just need a Gateway that references it.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: http
   namespace: kgateway-system
 spec:
-  gatewayClassName: kgateway
+  gatewayClassName: enterprise-kgateway
   listeners:
   - name: http
     port: 8080

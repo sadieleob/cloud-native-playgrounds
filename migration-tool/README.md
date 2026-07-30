@@ -34,8 +34,11 @@ kubectl --context $CONTEXT get nodes
 
 kgateway watches `v1alpha2.TLSRoute` — use the **experimental** bundle.
 
+> **Note:** Use `--server-side` apply. The HTTPRoute CRD exceeds the 262KB client-side annotation limit and will error without it.
+
 ```bash
-kubectl --context $CONTEXT apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml
+kubectl --context $CONTEXT apply --server-side --force-conflicts \
+  -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml
 ```
 
 ---
@@ -90,9 +93,12 @@ helm upgrade -i portal \
 
 ## 5. Gateway
 
+> **Note:** The Helm chart auto-creates a `enterprise-kgateway` GatewayClass. The `k8s/gateway.yaml` uses that class — do not change `gatewayClassName`.
+
 ```bash
 kubectl --context $CONTEXT apply -f k8s/gateway.yaml
-kubectl --context $CONTEXT -n $KGW_NAMESPACE wait --for=condition=Programmed gateway/http --timeout=60s
+kubectl --context $CONTEXT -n $KGW_NAMESPACE wait \
+  --for=condition=Programmed gateway/http --timeout=60s
 ```
 
 ---
@@ -115,15 +121,17 @@ kubectl --context $CONTEXT get httproute migration-tool -n migration-tool
 
 ## 7. Access
 
-Port-forward the kgateway proxy:
+kgateway creates one proxy pod per Gateway. Port-forward to it using the gateway label:
 
 ```bash
-kubectl --context $CONTEXT -n $KGW_NAMESPACE port-forward \
-  deploy/http-$KGW_NAMESPACE 8080:8080
+PROXY_POD=$(kubectl --context $CONTEXT -n $KGW_NAMESPACE \
+  get pod -l gateway.networking.k8s.io/gateway-name=http \
+  -o jsonpath='{.items[0].metadata.name}')
+
+kubectl --context $CONTEXT -n $KGW_NAMESPACE port-forward pod/$PROXY_POD 8080:8080
 ```
 
-> **Tip:** The proxy deployment name follows the pattern `<gateway-name>-<gateway-namespace>`.
-> If the above doesn't work, check: `kubectl --context $CONTEXT -n $KGW_NAMESPACE get deploy`
+> **Tip:** If port 8080 is already in use, pick another: `port-forward pod/$PROXY_POD 9090:8080` and access at `http://migration-tool.localhost:9090/migration/tool/`.
 
 Add to `/etc/hosts`:
 
